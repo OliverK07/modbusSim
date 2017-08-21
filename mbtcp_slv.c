@@ -94,20 +94,16 @@ int _choose_resp_frm(unsigned char *tx_buf, struct thread_pack *tpack, int ret, 
 	if(!ret){
 		switch(tsfpara->fc){
 			case READCOILSTATUS: //0x1 return request the status.
-				txlen = tcp_func.build_0102_resp((struct tcp_frm_rsp *)tx_buf, tpack, READCOILSTATUS);
-				//(struct tcp_frm_rsp *)tx_buf->byte = s_coil[tsfpara->straddr];
+				txlen = tcp_func.build_0102_resp((struct tcp_frm_rsp *)tx_buf, tpack, READCOILSTATUS);				
 				break;
 			case READINPUTSTATUS: // 0x2 return 
 				txlen = tcp_func.build_0102_resp((struct tcp_frm_rsp *)tx_buf, tpack, READINPUTSTATUS);
-				//tx_buf->act = s_coil[tx_buf->straddr];
 				break;
 			case READHOLDINGREGS:
 				txlen = tcp_func.build_0304_resp((struct tcp_frm_rsp *)tx_buf, tpack, READHOLDINGREGS);
-				//tx_buf->act = s_reg[tx_buf->straddr];
 				break;
 			case READINPUTREGS:
 				txlen = tcp_func.build_0304_resp((struct tcp_frm_rsp *)tx_buf, tpack, READINPUTREGS);
-				//tx_buf->act = s_reg[tx_buf->straddr];
 				break;
 			case FORCESIGLEREGS: //0x5 return the request value.
 				txlen = tcp_func.build_0506_resp((struct tcp_frm *)tx_buf, tpack, FORCESIGLEREGS);
@@ -346,18 +342,8 @@ int setup_mbtcp_simulater(char* port, int nreg, int ncoil)
 	struct thread_pack tpack;
 	struct tcp_frm_para tsfpara;
 	struct tcp_tmp_frm tmpara;
-	//
-	//TODO: add this two parameter as interface input.
-	//
-	//int nreg = 100, ncoil = 100;
-	//
-/*
-	if(argc < 2){
-		printf("Usage : ./mbtcp_slv <PORT> \n");
-		exit(0);
-	}
-	port = argv[1];
-*/
+
+
 	ret = _set_para(&tsfpara);
 	if(ret == -1){
 		printf("<Modbus Tcp Slave> set parameter fail !!\n");
