@@ -76,28 +76,21 @@ int tcp_query_parser(struct tcp_frm *rx_buf, struct thread_pack *tpack)
 		{	//on
 			pthread_mutex_lock(&(tpack->mutex));	
 			tmpara->act = qact;		//lock !
-			printf("before swap:%04x\n",qact);
+			pthread_mutex_unlock(&(tpack->mutex));
+			printf("before swap:%04x, qstraddr:%d\n",qact, qstraddr);
 			unsigned char tmp = SWAPU16(qact);
 			if(tmp == 0xff){ //set on
 				tpack->s_coil[qstraddr/8] |= 1 << (qstraddr%8);
-			}else{
+			}else{ //set off
 				tpack->s_coil[qstraddr/8] &= ~(1 << (qstraddr%8));
 			}
 			printf("after swap:%04x\n",tmp);
 			printf("***    set bit_addr[%d]:%04x    ***\n", qstraddr/8,tpack->s_coil[qstraddr/8] );
-			pthread_mutex_unlock(&(tpack->mutex));
+			printf("printf s_coil data:\n");
+			for(int i=0;i < 20;i++) printf("|%04x ",tpack->s_coil[i]);
+			printf("\n================\n");
 		}
-		
-		/*else{
-			printf("<Modbus TCP Slave> Query set the status to write  worng(fc = 0x05)\n");
-			return -3;
-		}
-		if(qstraddr != rstraddr){
-			printf("<Modbus TCP Slave> Query register address wrong (fc = 0x05)");
-			printf(", query addr : %x | resp addr : %x\n", qstraddr, rstraddr);
-			return -2;
-		}*/
-		
+				
 	}else if(!(rfc ^ PRESETEXCPSTATUS)){        // FC = 0x06, get the value to write
 		if(qstraddr != rstraddr){
 			printf("<Modbus TCP Slave> Query register address wrong (fc = 0x06)");
@@ -129,19 +122,6 @@ int tcp_query_parser(struct tcp_frm *rx_buf, struct thread_pack *tpack)
 				// &= ~()
 			}
 		}
-/*
-		for(int i=0;i< (pay->byte - '0'); i++){
-			//firstbyte 
-			for(int j=0;j<8;j++){
-				if(SWAPU16((pay->data + i)) & (1<<i)){
-					tpack->s_coil[qstraddr/8]
-				}else{
-
-				}
-			}
-		}
-*/		
-
 	}else if(!(rfc ^ PRESETMUILTREGS)/*FC16*/){
 		//memcpy(dst, src, count)
 		//
@@ -334,6 +314,40 @@ int tcp_build_resp_excp(struct tcp_frm_excp *tx_buf, struct tcp_frm_para *tsfpar
         
 	return txlen;
 }
+
+void print_bin(int val2)
+{
+	/*
+    int l = sizeof(n)*8;
+    int i;
+    if(i == 0)
+    {
+         printf("0");
+         return;
+     }
+    for(i = l-1; i >= 0; i --)
+    {
+        if(n&(1<<i)) break;
+    }
+ 
+    for(;i>=0; i --)
+		printf("%d", (n&(1<<i)) != 0);
+		*/
+		//unsigned char *p = (unsigned char*)&val2;
+//		for(int k = 0; k <= 3; k++)
+//		{
+			//int val2 = *(p);
+			for (int i = 7; i >= 0; i--)
+			{
+				if(val2 & (1 << i))
+				printf("1");
+				else
+				printf("0");
+			}
+		printf(" ");
+//		}
+}
+
 /*
  * FC 0x01 Read Coil Status respond / FC 0x02 Read Input Status
  */
@@ -343,6 +357,7 @@ int tcp_build_resp_read_status(struct tcp_frm_rsp *tx_buf, struct thread_pack *t
 	int txlen;
 	unsigned short msglen;
 	unsigned short len;   
+	int straddr;
 
 	len = tpack->tmpara->len;
 	byte = carry((int)len, 8);
@@ -355,15 +370,69 @@ int tcp_build_resp_read_status(struct tcp_frm_rsp *tx_buf, struct thread_pack *t
 	tx_buf->unitID = tpack->tsfpara->unitID;
 	tx_buf->fc = fc;
 	tx_buf->byte = (unsigned char)byte;
+	
+	straddr = tpack->tsfpara->straddr;// start address
+	//byte;//means how many bytes
+	int shift = len %8;//shift how many 
+	int arr_str = straddr%8;	// if ==0 ,means from head
+	int hd_str = straddr/8; 	// array head addr
+	
 
-	//memset(tx_buf+1, 9, byte);		// tx_buf+1 shift a size of sturct "tcp_frm_rsp" (9 byte)
-	memcpy(tx_buf+1, tpack->s_coil + tpack->tsfpara->straddr, byte);
+	unsigned char *tmp = (unsigned char*) malloc(byte*sizeof(unsigned char));
+	unsigned char *c_tmp = (unsigned char*)malloc(sizeof(unsigned char));//rest packet
+	// two byte a set, when [byte] =0 ,cp the [byte+1] address
 
+	if(arr_str == 0){
+		if(shift == 0){
+			memcpy(tmp, tpack->s_coil+ straddr/8, byte);
+		}else{
+			memcpy(tmp, tpack->s_coil+ straddr/8, byte-1);
+			//build rest packet.
+			*c_tmp = (*(tpack->s_coil+ (straddr/8) + byte )) & (0xff>>(8-shift));
+			memcpy(tmp+byte-1, c_tmp, 1);
+		}
+	}else{
+		if(shift == 0){ // complete byte
+			for(int i=0;i<byte;i++){
+				*c_tmp = ((*(tpack->s_coil+ hd_str + i )) & (0xff << shift))>> shift 
+						| ((*(tpack->s_coil+ hd_str + i +1)) & (0xff >> shift))<< shift;
+				memcpy(tmp+i, c_tmp,1);
+			}
+		}else{
+			//deal with last byte
+			for(int i=0;i<byte-1;i++){
+				*c_tmp = ((*(tpack->s_coil+ hd_str + i )) & (0xff << shift))>> shift 
+						| ((*(tpack->s_coil+ hd_str + i +1)) & (0xff >> shift))<< shift;
+				memcpy(tmp+i, c_tmp,1);
+			}
+			//last byte
+				*c_tmp = ((*(tpack->s_coil+ hd_str + byte )) & (0xff >> shift));
+				memcpy(tmp+byte-1, c_tmp, 1);
+		}
+	}
+	
+	memcpy(tx_buf+1, tmp, byte);
+	
+	printf("================\n");
 	printf("<Modbus TCP Slave> respond Read %s Status\n", fc==READCOILSTATUS?"Coil":"Input");
-
-	printf("printf s_coil data:\n");
-	for(int i=0;i < 20;i++) printf("|%08x ",tpack->s_coil[i]);
+	printf("transID:%d\n", tx_buf->transID);
+	printf("protoID:%d\n", tx_buf->potoID);
+	printf("msglen:%d\n", tx_buf->msglen);
+	printf("unitID:%x\n", tx_buf->unitID);
+	printf("fc:%x\n", tx_buf->fc);
+	printf("byte:%d\n", tx_buf->byte);
+	/*for(int i =0;i< byte;i++){
+		printf("%04x ", (tx_buf+1)+i);
+	}*/
+	printf("\nprintf s_coil data:\n");
+	for(int i=0;i < 20;i++) //printf("|%04x ",atoi(tpack->s_coil[i]);
+	{
+		print_bin(tpack->s_coil[i]);
+		printf("| ");
+	}
 	printf("\n================\n");
+	free(tmp);
+	free(c_tmp);
 	return txlen;
 }
 

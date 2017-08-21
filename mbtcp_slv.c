@@ -340,7 +340,6 @@ int setup_mbtcp_simulater(char* port, int nreg, int ncoil)
 	int skfd;
 	int rskfd;
 	int ret = 0;
-	//char *port;
 	pthread_t tid;
 	pthread_attr_t attr;
 	struct sched_param param;
@@ -372,9 +371,9 @@ int setup_mbtcp_simulater(char* port, int nreg, int ncoil)
 	}
 	tpack.s_reg = (unsigned short *)calloc(nreg, sizeof(unsigned short));
 	tpack.s_coil = (unsigned char *)calloc(ncoil, sizeof(unsigned char));
-	for(int i=1;i < nreg+1; i++){
-		tpack.s_reg[i] = SWAPU32(i); //swap first.
-		tpack.s_coil[i] = SWAPU16(i);
+	for(int i=0;i < nreg; i++){
+		tpack.s_reg[i] = 0xffff; //swap first.
+		tpack.s_coil[i] = 0xaa;
 	}
 	tpack.tmpara = &tmpara;
 	tpack.tsfpara = &tsfpara;
