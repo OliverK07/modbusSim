@@ -14,10 +14,17 @@
 
 #include "mbus.h" 
 
+#include "mbtcp_slv.h"
+
 #define BACKLOG		10
 
 
 extern struct mbus_tcp_func tcp_func;
+
+void int2str(int i, char* s)
+{
+	sprintf(s, "%d",i);
+}
 
 int _set_para(struct tcp_frm_para *tsfpara){
 	int tmp;
@@ -118,7 +125,7 @@ int _choose_resp_frm(unsigned char *tx_buf, struct thread_pack *tpack, int ret, 
 				txlen = tcp_func.build_1516_resp((struct tcp_frm *)tx_buf, tpack, PRESETMUILTREGS);
 				break;
 			default:
-				printf("<Modbus TCP Slave> unknown function code : %d\n", tpack->tsfpara->fc);
+				printf("<Modbus TCP Slave Response> unknown function code : %d\n", tpack->tsfpara->fc);
 				return -1;
 			}
 	}else if(ret == -1){
@@ -143,8 +150,6 @@ int _create_sk_svr(char *port)
 	struct addrinfo hints;	
 	struct addrinfo *res;	
 	struct addrinfo *p;
-	
-	printf("PORT : %s\n", port);
 
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_UNSPEC;
@@ -163,7 +168,7 @@ int _create_sk_svr(char *port)
 		if(skfd == -1){
 			continue;
 		}else{
-			printf("<Modbus Tcp Slave> sockFD = %d\n", skfd);
+			//printf("<Modbus Tcp Slave> sockFD = %d\n", skfd);
 		}
 		
 		opt = 1;
@@ -179,9 +184,7 @@ int _create_sk_svr(char *port)
 			printf("<Modbus Tcp Slave> bind : %s\n", strerror(errno));
 			close(skfd);
 			continue;
-		}
-		printf("<Modbus Tcp Slave> bind success\n");
-	
+		}	
 		break;
 	}
 	
@@ -199,8 +202,7 @@ int _create_sk_svr(char *port)
 	}
 
 	freeaddrinfo(res);
-	printf("<Modbus Tcp Slave> Waiting for connect ...\n");
-	
+	//printf("<Modbus Tcp Slave> Waiting for connect ...\n");
 	return skfd;
 }
 
@@ -225,11 +227,11 @@ int _sk_accept(int skfd)
 	if(acp_addr.ss_family == AF_INET){
 		p = (struct sockaddr_in *)&acp_addr;
 		inet_ntop(AF_INET, &p->sin_addr, addr, sizeof(addr));
-		printf("<Modbus Tcp Slave> recv from IP : %s\n", addr);
+		//printf("<Modbus Tcp Slave> recv from IP : %s\n", addr);
 	}else if(acp_addr.ss_family == AF_INET6){
 		s = (struct sockaddr_in6 *)&acp_addr;
 		inet_ntop(AF_INET6, &s->sin6_addr, addr, sizeof(addr));
-		printf("<Modbus Tcp Slave> recv from IP : %s\n", addr);
+		//printf("<Modbus Tcp Slave> recv from IP : %s\n", addr);
 	}else{
 		printf("<Modbus Tcp Slave>  wried ! What is the recv addr family?");
 		return -1;
@@ -257,15 +259,10 @@ void *work_thread(void *data)
 	unsigned char tx_buf[FRMLEN];
 
 	tpack = (struct thread_pack *)data;
-	printf("printf s_reg data:\n");
-	for(int i=0;i < 20;i++) printf("%d ",tpack->s_reg[i]);
-	printf("\n================\n");
 	rskfd = tpack->rskfd;
 	tsfpara = tpack->tsfpara;
 
 	lock = 0;
-	printf("<Modbus Tcp Slave> Create work thread, connect fd = %d | thread ID = %lu\n",
-			 rskfd, pthread_self());
 
 	do{
 		FD_ZERO(&rfds);
@@ -281,7 +278,7 @@ void *work_thread(void *data)
 		retval = select(rskfd + 1, &rfds, &wfds, 0, &tv);
 		if(retval <= 0){
 			printf("<Modbus Tcp Slave> Watting query ...\n");
-			sleep(3);
+			sleep(1);
 			continue;
 		}
 
@@ -293,18 +290,12 @@ void *work_thread(void *data)
 				pthread_exit(NULL);
 			}
 
-			if(rlen != TCPSENDQUERYLEN){
-				printf("<Modbus Tcp Slave> Recv Incomplete !\n");
-				print_data(rx_buf, rlen, RECVINCOMPLT);
-				break;
-			}
-
 			ret = tcp_func.chk_dest((struct tcp_frm *)rx_buf, tsfpara);
 			if(ret == -1){
 				memset(rx_buf, 0, FRMLEN);
 				continue;
 			}
-			debug_print_data(rx_buf, rlen, RECVQRY);
+						
 			ret = tcp_func.qry_parser((struct tcp_frm *)rx_buf, tpack);
 			lock = 1;
 		}
@@ -313,25 +304,25 @@ void *work_thread(void *data)
 			if(txlen == -1){
 				break;
 			}
+
 			wlen = send(rskfd, tx_buf, txlen, 0);
 			if(wlen != txlen){
 				printf("<Modbus TCP Slave> send respond incomplete !!\n");
 				print_data(tx_buf, wlen, SENDINCOMPLT);
 				break;
 			}
-			debug_print_data(tx_buf, txlen, SENDRESP);
+
 			poll_slvID(tsfpara.unitID);
 			lock = 0;
 		}
-
-		sleep(1);
+		//sleep(1);
 	}while(1);
 
 	pthread_detach(pthread_self());
 	pthread_exit(NULL);
 }
 
-int setup_mbtcp_simulater(char* port, int nreg, int ncoil)
+int setup_mbtcp_simulater(int port, int nreg, int ncoil)
 {
 	int skfd;
 	int rskfd;
@@ -342,6 +333,7 @@ int setup_mbtcp_simulater(char* port, int nreg, int ncoil)
 	struct thread_pack tpack;
 	struct tcp_frm_para tsfpara;
 	struct tcp_tmp_frm tmpara;
+	char s[6];
 
 
 	ret = _set_para(&tsfpara);
@@ -349,8 +341,8 @@ int setup_mbtcp_simulater(char* port, int nreg, int ncoil)
 		printf("<Modbus Tcp Slave> set parameter fail !!\n");
 		exit(0);
 	}
-
-	skfd = _create_sk_svr(port);
+	int2str(port, s);
+	skfd = _create_sk_svr(s);
 	if(skfd == -1){
 		printf("<Modbus Tcp Slave> god damn wried !!\n");
 		exit(0);
@@ -391,27 +383,9 @@ int setup_mbtcp_simulater(char* port, int nreg, int ncoil)
 	return 0;
 }
 
+
 int main(int argc, char **argv)
 {
-	setup_mbtcp_simulater("5020",100,100);//port, nreg,ncoil
+	setup_mbtcp_simulater(5020,100,100);//port, nreg,ncoil
 	return 0;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

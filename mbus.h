@@ -18,8 +18,8 @@
 #define READINPUTREGS 			0x04
 #define FORCESIGLEREGS 			0x05
 #define PRESETEXCPSTATUS 		0x06
-#define FORCEMUILTCOILS			0x15
-#define PRESETMUILTREGS			0x16
+#define FORCEMUILTCOILS			0x0f
+#define PRESETMUILTREGS			0x10
 #define EXCPTIONCODE			0x80
 #define EXCPILLGFUNC			0x01
 #define EXCPILLGDATAADDR		0x02
@@ -45,7 +45,7 @@
 #define SWAPU16(num) (((num)>>8)|((num)<<8))
 #define SWAPU32(num) ((((num)>>24)&0xff) | (((num)<<8)&0xff0000) | (((num)>>8)&0xff00) | (((num)<<24)&0xff000000))
 
-#define DEBUGMSG
+//#define DEBUGMSG
 //#define POLL_SLVID
 
 #define FRMLEN 260  /* | 1byte | 1byte | 0~255byte | 2byte | */

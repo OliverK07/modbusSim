@@ -19,6 +19,19 @@ struct mbus_tcp_func tcp_func = {
 	.build_1516_resp = tcp_build_resp_multi,
 };
 
+void print_bin(int val2)
+{
+			for (int i = 7; i >= 0; i--)
+			{
+				if(val2 & (1 << i))
+				printf("1");
+				else
+				printf("0");
+			}
+		printf(" ");
+
+}
+
 /*
  * Analyze modebus TCP query
  */
@@ -45,52 +58,37 @@ int tcp_query_parser(struct tcp_frm *rx_buf, struct thread_pack *tpack)
 
 	tsfpara = tpack->tsfpara;
 	tmpara = tpack->tmpara;
-	
+
 	qtransID = be16toh(rx_buf->transID);
 	tsfpara->transID = qtransID;
-
 	qmsglen = be16toh(rx_buf->msglen);
 	qfc = rx_buf->fc;
 	qstraddr = be16toh(rx_buf->straddr);
 	qact = be16toh(rx_buf->act);
 
 	rfc = qfc;
-	tsfpara->fc = qfc;
 	rstraddr = qstraddr;
-	tsfpara->straddr = rstraddr;
-	rlen = tsfpara->len;//keep this just for now
+	rlen = tsfpara->len;
+
 	tsfpara->len = rlen;
+	tsfpara->fc = qfc;
+	tsfpara->straddr = rstraddr;
 
-	if(qmsglen != TCPQUERYMSGLEN){
-		printf("<Modbus TCP Slave> Modbus TCP message length should be 6 byte !!\n");
-		return -4;
-	}
-
+/*  //our simulator don't care if fcs match!
 	if(qfc != rfc){
 		printf("<Modbus TCP Slave> Modbus TCP function code improper !!\n");
 		return -1;
-	}
-
+	}*/
 	if(!(rfc ^ FORCESIGLEREGS)){                // FC = 0x05, get the status to write(on/off)
-		
-		{	//on
-			pthread_mutex_lock(&(tpack->mutex));	
-			tmpara->act = qact;		//lock !
-			pthread_mutex_unlock(&(tpack->mutex));
-			printf("before swap:%04x, qstraddr:%d\n",qact, qstraddr);
-			unsigned char tmp = SWAPU16(qact);
-			if(tmp == 0xff){ //set on
-				tpack->s_coil[qstraddr/8] |= 1 << (qstraddr%8);
-			}else{ //set off
-				tpack->s_coil[qstraddr/8] &= ~(1 << (qstraddr%8));
-			}
-			printf("after swap:%04x\n",tmp);
-			printf("***    set bit_addr[%d]:%04x    ***\n", qstraddr/8,tpack->s_coil[qstraddr/8] );
-			printf("printf s_coil data:\n");
-			for(int i=0;i < 20;i++) printf("|%04x ",tpack->s_coil[i]);
-			printf("\n================\n");
-		}
-				
+		pthread_mutex_lock(&(tpack->mutex));	
+		tmpara->act = qact;		//lock !
+		pthread_mutex_unlock(&(tpack->mutex));
+		unsigned char tmp = SWAPU16(qact);
+		if(tmp == 0xff){
+			tpack->s_coil[qstraddr/8] |= 1 << (qstraddr%8);
+		}else{
+			tpack->s_coil[qstraddr/8] &= ~(1 << (qstraddr%8));
+		}		
 	}else if(!(rfc ^ PRESETEXCPSTATUS)){        // FC = 0x06, get the value to write
 		if(qstraddr != rstraddr){
 			printf("<Modbus TCP Slave> Query register address wrong (fc = 0x06)");
@@ -100,36 +98,42 @@ int tcp_query_parser(struct tcp_frm *rx_buf, struct thread_pack *tpack)
 		pthread_mutex_lock(&(tpack->mutex));
 		tmpara->act = qact;
 		tpack->s_reg[qstraddr] = (int)SWAPU16(qact);
-		printf("***    set Register[%d]:%d    ***\n", qstraddr, qact);
 		pthread_mutex_unlock(&(tpack->mutex));
 	}else if(!(rfc ^ FORCEMUILTCOILS)/*FC15*/){
-		//qact for  how many coils, qstraddr for start address, following data will be "X BYTE" "DATA" "DATA"
-		
+		int byte_rem = 0;  			// byte remain
+		int str_off = qstraddr%8;	// start offset, if 0 means start from head
+		int qbit_value = 0;			// the value going to set
 		struct payload_coil *pay = (struct payload_coil *)(rx_buf+1);
-		printf("write multi register byte: %x\n", pay->byte);
+		unsigned char *tmp = (unsigned char*)malloc(qact/8 *sizeof(unsigned char));
 
-		//qact as how many bits
+		memcpy(tmp, rx_buf+1, pay->byte +1);
+		tmpara->act = qact;
 		for(int i=0;i<qact ;i++){
-			int carry_over = (qstraddr%8 +i)/8;
-			if(((*(pay->data + i/8) - '0') & 1<<(i%8)) == 1){
-				tpack->s_coil[qstraddr/8 + carry_over] |= 1 << (i+qstraddr)%8;
-				// |= the value
+			qbit_value = tmp[1+ (i/8)] & (1 << i%8);
+			if(qbit_value == 0){
+				tpack->s_coil[qstraddr/8 + i/8 + (i+str_off)/8 ] &= ~(1 << (i+str_off)%8);
 			}else{
-				tpack->s_coil[qstraddr/8 + carry_over] &= ~(1 << (i+qstraddr)%8);
-				// &= ~()
+				tpack->s_coil[qstraddr/8 + i/8 + (i+str_off)/8 ] |= (1 << (i+str_off)%8);
 			}
 		}
+		pthread_mutex_lock(&(tpack->mutex));	
+		tmpara->act = qact;
+		pthread_mutex_unlock(&(tpack->mutex));
+		free(tmp);
 	}else if(!(rfc ^ PRESETMUILTREGS)/*FC16*/){
-		//memcpy(dst, src, count)
-		//
-		// TODO: check if this is correct.
-		//
 		struct payload_reg *pay = (struct payload_reg *)(rx_buf+1);
-		printf("write multi register byte: %x\n", pay->byte);
-		for(int i=0;i< (pay->byte - '0'); i++){
-			unsigned short val = *(pay->data +i);
-			tpack->s_reg[qstraddr + i] = SWAPU16(val); //store in LE
+		unsigned char *tmp = (unsigned char*)malloc((qact*2+1) * sizeof(unsigned char));
+
+		memcpy(tmp, rx_buf+1, pay->byte +1);
+		for(int i=0;i< (pay->byte); i++){
+			unsigned short val = tmp[1+(i+1)] << 8 | tmp[1+i];
+			tpack->s_reg[qstraddr + i/2] = val; //store in LE
+			i++;
 		}
+		pthread_mutex_lock(&(tpack->mutex));	
+		tmpara->act = qact;
+		pthread_mutex_unlock(&(tpack->mutex));
+		free(tmp);
 	}
 	else{
 		if((qstraddr + qact <= rstraddr + rlen) && (qstraddr >= rstraddr)){ // Query addr+shift len must smaller than the contain we set in addr+shift len
@@ -144,13 +148,15 @@ int tcp_query_parser(struct tcp_frm *rx_buf, struct thread_pack *tpack)
 			return -2;
 		}
 	}
-
 	return 0;
 }
 /* 
  * Check query Portocol ID/Unit ID correct or not. 
  * If wrong, return -1 then throw away it !
  */
+ 	//
+	//TODO: change this in DEBUG_MODE
+	//
 int tcp_chk_pack_dest(struct tcp_frm *rx_buf, struct tcp_frm_para *tfpara)
 {
 	unsigned short qpotoID;
@@ -158,19 +164,12 @@ int tcp_chk_pack_dest(struct tcp_frm *rx_buf, struct tcp_frm_para *tfpara)
 
 	qpotoID = be16toh(rx_buf->potoID);
 	qunitID = rx_buf->unitID;
-	//make response ID is request unitID
-	//
-	//TODO: change this in DEBUG_MODE
-	//
-
-	//runitID = tfpara->unitID;
 	runitID = qunitID;
 
 	if(qpotoID != (unsigned short)TCPMBUSPROTOCOL){
 		printf("<Modbus TCP> recv query protocol ID wrong !!\n");
 		return -1;
 	}
-
 	if(qunitID != runitID){
 		printf("<Modbus TCP> the destination of recv query wrong !!(unit ID) : ");
 		printf("Query unitID : %x | Respond unitID : %x\n", qunitID, runitID);
@@ -311,20 +310,6 @@ int tcp_build_resp_excp(struct tcp_frm_excp *tx_buf, struct tcp_frm_para *tsfpar
         
 	return txlen;
 }
-
-void print_bin(int val2)
-{
-			for (int i = 7; i >= 0; i--)
-			{
-				if(val2 & (1 << i))
-				printf("1");
-				else
-				printf("0");
-			}
-		printf(" ");
-
-}
-
 /*
  * FC 0x01 Read Coil Status respond / FC 0x02 Read Input Status
  */
@@ -348,35 +333,33 @@ int tcp_build_resp_read_status(struct tcp_frm_rsp *tx_buf, struct thread_pack *t
 	tx_buf->fc = fc;
 	tx_buf->byte = (unsigned char)byte;
 	
-	straddr = tpack->tsfpara->straddr;// start address
+	straddr = tpack->tsfpara->straddr;		// start address
 
-	int shift = len %8;//shift how many 
-	int arr_str = straddr%8;	// if ==0 ,means from head
-	int hd_str = straddr/8; 	// array head addr
-	
-
+	int shift = len %8;						//shift how many 
+	int arr_str = straddr%8;				// if ==0 ,means from head
+	int hd_str = straddr/8; 				// array head addr
 	unsigned char *tmp = (unsigned char*) malloc(byte*sizeof(unsigned char));
 	unsigned char *c_tmp = (unsigned char*)malloc(sizeof(unsigned char));//rest packet
-
 
 	if(arr_str == 0){
 		if(shift == 0){
 			memcpy(tmp, tpack->s_coil+ straddr/8, byte);
 		}else{
-			memcpy(tmp, tpack->s_coil+ straddr/8, byte-1);
+
+			if(byte > 1)
+				memcpy(tmp, tpack->s_coil+ straddr/8, byte-1);
 			//build rest packet.
-			*c_tmp = (*(tpack->s_coil+ (straddr/8) + byte )) & (0xff>>(8-shift));
+			*c_tmp = (*(tpack->s_coil+ (straddr/8) + byte-1 )) & (0xff>>(8-shift));
 			memcpy(tmp+byte-1, c_tmp, 1);
 		}
 	}else{
-		if(shift == 0){ // complete byte
+		if(shift == 0){ 					//request complete byte
 			for(int i=0;i<byte;i++){
 				*c_tmp = ((*(tpack->s_coil+ hd_str + i )) & (0xff << shift))>> shift 
 						| ((*(tpack->s_coil+ hd_str + i +1)) & (0xff >> shift))<< shift;
 				memcpy(tmp+i, c_tmp,1);
 			}
 		}else{
-			//deal with last byte
 			for(int i=0;i<byte-1;i++){
 				*c_tmp = ((*(tpack->s_coil+ hd_str + i )) & (0xff << shift))>> shift 
 						| ((*(tpack->s_coil+ hd_str + i +1)) & (0xff >> shift))<< shift;
@@ -385,32 +368,14 @@ int tcp_build_resp_read_status(struct tcp_frm_rsp *tx_buf, struct thread_pack *t
 			//last byte
 				*c_tmp = ((*(tpack->s_coil+ hd_str + byte )) & (0xff >> shift));
 				memcpy(tmp+byte-1, c_tmp, 1);
+
 		}
 	}
-	
 	memcpy(tx_buf+1, tmp, byte);
-	
-	printf("================\n");
-	printf("<Modbus TCP Slave> respond Read %s Status\n", fc==READCOILSTATUS?"Coil":"Input");
-	printf("transID:%d\n", tx_buf->transID);
-	printf("protoID:%d\n", tx_buf->potoID);
-	printf("msglen:%d\n", tx_buf->msglen);
-	printf("unitID:%x\n", tx_buf->unitID);
-	printf("fc:%x\n", tx_buf->fc);
-	printf("byte:%d\n", tx_buf->byte);
-	printf("\nprintf s_coil data:\n");
-	for(int i=0;i < 20;i++) 
-	{
-		print_bin(tpack->s_coil[i]);
-		printf("| ");
-	}
-	printf("\n================\n");
 	free(tmp);
 	free(c_tmp);
 	return txlen;
 }
-
-
 /*
  * FC 0x03 Read Holding Registers respond / FC 0x04 Read Input Registers respond
  */ 
@@ -433,17 +398,8 @@ int tcp_build_resp_read_regs(struct tcp_frm_rsp *tx_buf, struct thread_pack *tpa
 	tx_buf->unitID = tpack->tsfpara->unitID;
 	tx_buf->fc = fc;
 	tx_buf->byte = (unsigned char)byte;
-		
-	
-	printf("%s,memcpy bytes:%d, read addr:%d\n",__FUNCTION__,byte, tpack->tsfpara->straddr);
-	memcpy(tx_buf+1, tpack->s_reg + tpack->tsfpara->straddr, byte);
-	
-	printf("<Modbus TCP Slave> respond Read %s Registers\n", fc==READHOLDINGREGS?"Holding":"Input");
-	
-	printf("printf s_reg data:\n");
-	for(int i=0;i < 20;i++) printf("%d ",tpack->s_reg[i]);
-	printf("\n================\n");
 
+	memcpy(tx_buf+1, tpack->s_reg + tpack->tsfpara->straddr, byte);
 	return txlen;
 }
 /* 
@@ -464,19 +420,14 @@ int tcp_build_resp_set_single(struct tcp_frm *tx_buf, struct thread_pack *tpack,
 	tx_buf->straddr = htons(tpack->tsfpara->straddr);
 	tx_buf->act = htons(tpack->tmpara->act);
 
-	printf("<Modbus TCP Slave> respond %s\n", fc==FORCESIGLEREGS?"Force Single Coli":"Preset Single Register");
-
 	return txlen;
 }
-
-
 /*
  * FC 0x0f, force multiple coil / FC 0x0A preset multiple registers
  */
 int tcp_build_resp_multi(struct tcp_frm *tx_buf, struct thread_pack *tpack, unsigned char fc)
 {
 	int txlen;
-
 	tpack->tsfpara->msglen = (unsigned short)TCPRESPSETSIGNALLEN;
 	txlen = TCPRESPSETSIGNALLEN + 6;
 
@@ -488,11 +439,5 @@ int tcp_build_resp_multi(struct tcp_frm *tx_buf, struct thread_pack *tpack, unsi
 	tx_buf->straddr = htons(tpack->tsfpara->straddr);
 	tx_buf->act = htons(tpack->tmpara->act);
 
-	printf("<Modbus TCP Slave> respond %s\n", fc==FORCEMUILTCOILS?" FC15 FORCEMUILTCOILS":"FC16 PRESETMUILTREGS");
-
 	return txlen;
 }
-
-
-
-
