@@ -11,6 +11,7 @@
 #include <arpa/inet.h>
 #include <sched.h>
 #include <pthread.h>
+#include <fcntl.h>
 
 #include "mbus.h" 
 
@@ -214,30 +215,47 @@ int _sk_accept(int skfd)
 	struct sockaddr_storage acp_addr;
 	struct sockaddr_in *p;
 	struct sockaddr_in6 *s;
+	fd_set rfds;
+	fd_set wfds;
+	struct timeval tv;
+	int rst;
+	int slt_ret;
 	
 	addrlen = sizeof(acp_addr);
-	
-	rskfd = accept(skfd, (struct sockaddr*)&acp_addr, &addrlen);
-	if(rskfd == -1){
-		close(rskfd);
-		printf("<Modbus Tcp Slave> accept : %s\n", strerror(errno));
-		exit(0);
-	}
-	
-	if(acp_addr.ss_family == AF_INET){
-		p = (struct sockaddr_in *)&acp_addr;
-		inet_ntop(AF_INET, &p->sin_addr, addr, sizeof(addr));
-		//printf("<Modbus Tcp Slave> recv from IP : %s\n", addr);
-	}else if(acp_addr.ss_family == AF_INET6){
-		s = (struct sockaddr_in6 *)&acp_addr;
-		inet_ntop(AF_INET6, &s->sin6_addr, addr, sizeof(addr));
-		//printf("<Modbus Tcp Slave> recv from IP : %s\n", addr);
+	fcntl(skfd, F_SETFL, O_NONBLOCK);
+
+	FD_ZERO(&rfds);
+	FD_ZERO(&wfds);
+	FD_SET(skfd, &rfds);
+
+	tv.tv_sec = 1;
+	tv.tv_usec = 0;
+
+	if((slt_ret = select(skfd + 1, &rfds, &wfds, 0, &tv)) > 0 && FD_ISSET(skfd, &rfds))
+	{
+		rskfd = accept(skfd, (struct sockaddr*)&acp_addr, &addrlen);
+		if(rskfd == -1){
+			close(rskfd);
+			printf("<Modbus Tcp Slave> accept : %s\n", strerror(errno));
+			exit(0);
+		}
+		
+		if(acp_addr.ss_family == AF_INET){
+			p = (struct sockaddr_in *)&acp_addr;
+			inet_ntop(AF_INET, &p->sin_addr, addr, sizeof(addr));
+			//printf("<Modbus Tcp Slave> recv from IP : %s\n", addr);
+		}else if(acp_addr.ss_family == AF_INET6){
+			s = (struct sockaddr_in6 *)&acp_addr;
+			inet_ntop(AF_INET6, &s->sin6_addr, addr, sizeof(addr));
+			//printf("<Modbus Tcp Slave> recv from IP : %s\n", addr);
+		}else{
+			printf("<Modbus Tcp Slave>  wried ! What is the recv addr family?");
+			return -1;
+		}
+		return rskfd;
 	}else{
-		printf("<Modbus Tcp Slave>  wried ! What is the recv addr family?");
-		return -1;
+		return slt_ret;
 	}
-	
-	return rskfd;
 }
 
 
@@ -335,6 +353,19 @@ int setup_mbtcp_simulater(int port, int nreg, int ncoil)
 	struct tcp_tmp_frm tmpara;
 	char s[6];
 
+	int wlen;
+	int txlen;
+	int rlen;
+	int retval;
+	
+	
+	int lock;
+	fd_set rfds;
+	fd_set wfds;
+	struct timeval tv;
+	unsigned char rx_buf[FRMLEN];
+	unsigned char tx_buf[FRMLEN];
+
 
 	ret = _set_para(&tsfpara);
 	if(ret == -1){
@@ -343,6 +374,7 @@ int setup_mbtcp_simulater(int port, int nreg, int ncoil)
 	}
 	int2str(port, s);
 	skfd = _create_sk_svr(s);
+	//printf("(%s)%d, skfd:%d\n", __FUNCTION__,__LINE__,skfd);
 	if(skfd == -1){
 		printf("<Modbus Tcp Slave> god damn wried !!\n");
 		exit(0);
@@ -355,29 +387,76 @@ int setup_mbtcp_simulater(int port, int nreg, int ncoil)
 	}
 	tpack.tmpara = &tmpara;
 	tpack.tsfpara = &tsfpara;
-	pthread_mutex_init(&(tpack.mutex), NULL);
-	pthread_attr_init(&attr);
-	pthread_attr_setschedpolicy(&attr, SCHED_RR);	// use RR scheduler
-	param.sched_priority = 6;						// set priority 10
-	pthread_attr_setschedparam(&attr, &param);
-	
 	do{	
 		rskfd = _sk_accept(skfd);
 		if(rskfd == -1){
 			printf("<Modbus Tcp Slave> god damn wried !!\n");
 			break;
+		}else if(rskfd == 0){
+			//timeout 
+			continue;
 		}
-	
-		tpack.rskfd = rskfd;
-		tpack.tsfpara = &tsfpara;
-		ret = pthread_create(&tid, NULL, work_thread, (void *)&tpack);	
-		if(ret != 0){
-			handle_error_en(ret, "pthread_create");
-		}	
+		//printf("(%s)%d, rskfd:%d\n", __FUNCTION__,__LINE__,rskfd);
+		lock = 0;
+		while(1)
+		{
+
+			FD_ZERO(&rfds);
+			FD_ZERO(&wfds);
+			FD_SET(rskfd, &rfds);
+			if(lock){
+				FD_SET(rskfd, &wfds);
+			}
+
+			tv.tv_sec = 1;
+			tv.tv_usec = 0;
+
+			retval = select(rskfd + 1, &rfds, &wfds, 0, &tv);
+			if(retval <= 0){
+				//printf("<Modbus Tcp Slave> Watting query ...\n");
+				//sleep(1);
+				continue;
+			}
+			//printf("(%s)%d\n", __FUNCTION__,__LINE__);
+			if(FD_ISSET(rskfd, &rfds)){
+				//printf("(%s)%d\n", __FUNCTION__,__LINE__);
+				rlen = recv(rskfd, rx_buf, sizeof(rx_buf), 0);
+				if(rlen < 1){
+					printf("<Modbus Tcp Slave> disconnect(rlen = %d) thread ID = %lu\n", rlen, pthread_self());
+					close(rskfd);
+					break;
+					//pthread_exit(NULL);
+				}
+				//printf("(%s)%d\n", __FUNCTION__,__LINE__);
+				ret = tcp_func.chk_dest((struct tcp_frm *)rx_buf, &tsfpara);
+				if(ret == -1){
+					memset(rx_buf, 0, FRMLEN);
+					continue;
+				}
+				//printf("(%s)%d\n", __FUNCTION__,__LINE__);
+				ret = tcp_func.qry_parser((struct tcp_frm *)rx_buf, &tpack);
+				lock = 1;
+				//printf("(%s)%d, ret:%d\n", __FUNCTION__,__LINE__,ret);
+			}
+			if(FD_ISSET(rskfd, &wfds) && lock){
+				//printf("(%s)%d\n", __FUNCTION__,__LINE__);
+				txlen = _choose_resp_frm(tx_buf, &tpack, ret, &lock);
+				if(txlen == -1){
+					break;
+				}
+				//printf("(%s)%d\n", __FUNCTION__,__LINE__);
+				wlen = send(rskfd, tx_buf, txlen, 0);
+				if(wlen != txlen){
+					printf("<Modbus TCP Slave> send respond incomplete !!\n");
+					print_data(tx_buf, wlen, SENDINCOMPLT);
+					break;
+				}
+				lock = 0;
+			}
+		}
 	}while(1);
 	close(skfd);
-	pthread_mutex_destroy(&(tpack.mutex));
-	pthread_attr_destroy(&attr);
+
 	free(tpack.s_reg);
 	free(tpack.s_coil);
 	return 0;
@@ -387,5 +466,6 @@ int setup_mbtcp_simulater(int port, int nreg, int ncoil)
 int main(int argc, char **argv)
 {
 	setup_mbtcp_simulater(5020,100,100);//port, nreg,ncoil
+	system("pause");
 	return 0;
 }

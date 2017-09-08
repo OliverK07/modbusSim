@@ -48,6 +48,7 @@ struct payload_coil {
 
 int tcp_query_parser(struct tcp_frm *rx_buf, struct thread_pack *tpack)
 {
+	printf("(%s)%d\n", __FUNCTION__,__LINE__);
 	unsigned short qtransID;
 	unsigned short qmsglen;
 	unsigned char qfc, rfc;
@@ -79,10 +80,12 @@ int tcp_query_parser(struct tcp_frm *rx_buf, struct thread_pack *tpack)
 		printf("<Modbus TCP Slave> Modbus TCP function code improper !!\n");
 		return -1;
 	}*/
+	printf("(%s)%d, rfc:%x\n", __FUNCTION__,__LINE__, rfc);
 	if(!(rfc ^ FORCESIGLEREGS)){                // FC = 0x05, get the status to write(on/off)
-		pthread_mutex_lock(&(tpack->mutex));	
+		printf("(%s)%d\n", __FUNCTION__,__LINE__);
+		//pthread_mutex_lock(&(tpack->mutex));	
 		tmpara->act = qact;		//lock !
-		pthread_mutex_unlock(&(tpack->mutex));
+		//pthread_mutex_unlock(&(tpack->mutex));
 		unsigned char tmp = SWAPU16(qact);
 		if(tmp == 0xff){
 			tpack->s_coil[qstraddr/8] |= 1 << (qstraddr%8);
@@ -90,16 +93,18 @@ int tcp_query_parser(struct tcp_frm *rx_buf, struct thread_pack *tpack)
 			tpack->s_coil[qstraddr/8] &= ~(1 << (qstraddr%8));
 		}		
 	}else if(!(rfc ^ PRESETEXCPSTATUS)){        // FC = 0x06, get the value to write
+		printf("(%s)%d\n", __FUNCTION__,__LINE__);
 		if(qstraddr != rstraddr){
 			printf("<Modbus TCP Slave> Query register address wrong (fc = 0x06)");
 			printf(", query addr : %x | resp addr : %x\n", qstraddr, rstraddr);
 			return -2;
 		}
-		pthread_mutex_lock(&(tpack->mutex));
+		//pthread_mutex_lock(&(tpack->mutex));
 		tmpara->act = qact;
 		tpack->s_reg[qstraddr] = (int)SWAPU16(qact);
-		pthread_mutex_unlock(&(tpack->mutex));
+		//pthread_mutex_unlock(&(tpack->mutex));
 	}else if(!(rfc ^ FORCEMUILTCOILS)/*FC15*/){
+		printf("(%s)%d\n", __FUNCTION__,__LINE__);
 		int byte_rem = 0;  			// byte remain
 		int str_off = qstraddr%8;	// start offset, if 0 means start from head
 		int qbit_value = 0;			// the value going to set
@@ -116,11 +121,12 @@ int tcp_query_parser(struct tcp_frm *rx_buf, struct thread_pack *tpack)
 				tpack->s_coil[qstraddr/8 + i/8 + (i+str_off)/8 ] |= (1 << (i+str_off)%8);
 			}
 		}
-		pthread_mutex_lock(&(tpack->mutex));	
+		//pthread_mutex_lock(&(tpack->mutex));	
 		tmpara->act = qact;
-		pthread_mutex_unlock(&(tpack->mutex));
+		//pthread_mutex_unlock(&(tpack->mutex));
 		free(tmp);
 	}else if(!(rfc ^ PRESETMUILTREGS)/*FC16*/){
+		printf("(%s)%d\n", __FUNCTION__,__LINE__);
 		struct payload_reg *pay = (struct payload_reg *)(rx_buf+1);
 		unsigned char *tmp = (unsigned char*)malloc((qact*2+1) * sizeof(unsigned char));
 
@@ -130,17 +136,21 @@ int tcp_query_parser(struct tcp_frm *rx_buf, struct thread_pack *tpack)
 			tpack->s_reg[qstraddr + i/2] = val; //store in LE
 			i++;
 		}
-		pthread_mutex_lock(&(tpack->mutex));	
+		//pthread_mutex_lock(&(tpack->mutex));	
 		tmpara->act = qact;
-		pthread_mutex_unlock(&(tpack->mutex));
+		//pthread_mutex_unlock(&(tpack->mutex));
 		free(tmp);
 	}
 	else{
+		printf("(%s)%d\n", __FUNCTION__,__LINE__);
 		if((qstraddr + qact <= rstraddr + rlen) && (qstraddr >= rstraddr)){ // Query addr+shift len must smaller than the contain we set in addr+shift len
-			pthread_mutex_lock(&(tpack->mutex));
+			//pthread_mutex_lock(&(tpack->mutex));
 			tmpara->straddr = qstraddr;
 			tmpara->len = qact;
-			pthread_mutex_unlock(&(tpack->mutex));
+			//pthread_mutex_unlock(&(tpack->mutex));
+			printf("(%s)%d\n", __FUNCTION__,__LINE__);
+			//return -2;
+			
 		}else{
 			printf("<Modbus TCP Slave> The address have no contain\n");
 			printf("Query addr : %x, shift len : %x | Respond addr: %x, shift len : %x\n",
@@ -148,6 +158,7 @@ int tcp_query_parser(struct tcp_frm *rx_buf, struct thread_pack *tpack)
 			return -2;
 		}
 	}
+	printf("(%s)%d\n", __FUNCTION__,__LINE__);
 	return 0;
 }
 /* 
